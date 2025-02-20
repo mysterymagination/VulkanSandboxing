@@ -18,6 +18,9 @@
 
 # Fortran module files
 *.mod
+
+# Build dirs
+**/Build
 *.smod
 
 # Compiled Static libraries
