@@ -23,7 +23,7 @@ private:
     GLFWwindow *window;
 
 private:
-    void initWindow
+    void initWindow()
     {
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
