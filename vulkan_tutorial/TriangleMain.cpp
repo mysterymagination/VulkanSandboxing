@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <vector>
 #include <algorithm>
+#include <map>
 
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;
@@ -249,6 +250,7 @@ private:
         std::vector<VkPhysicalDevice> devices(deviceCount);
         vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
 
+        /* first come algo
         for (const auto &device : devices)
         {
             if (isDeviceSuitable(device))
@@ -262,6 +264,29 @@ private:
         {
             throw std::runtime_error("failed to find a suitable GPU!");
         }
+        */
+
+        // Use an ordered map to automatically sort candidates by increasing score
+        std::multimap<int, VkPhysicalDevice> candidates;
+
+        for (const auto &device : devices)
+        {
+            int score = rateDeviceSuitability(device);
+            candidates.insert(std::make_pair(score, device));
+        }
+
+        // Check if the best candidate is suitable at all
+        if (candidates.rbegin()->first > 0)
+        {
+            physicalDevice = candidates.rbegin()->second;
+            VkPhysicalDeviceProperties deviceProperties;
+            vkGetPhysicalDeviceProperties(physicalDevice, &deviceProperties);
+            std::cout << "Selecting GPU device " << deviceProperties.deviceName << '\n';
+        }
+        else
+        {
+            throw std::runtime_error("failed to find a suitable GPU!");
+        }
     }
 
     bool isDeviceSuitable(VkPhysicalDevice device)
@@ -272,6 +297,35 @@ private:
         vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
         return deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU &&
                deviceFeatures.geometryShader;
+    }
+
+    int rateDeviceSuitability(VkPhysicalDevice device)
+    {
+        int score = 0;
+
+        VkPhysicalDeviceProperties deviceProperties;
+        vkGetPhysicalDeviceProperties(device, &deviceProperties);
+        VkPhysicalDeviceFeatures deviceFeatures;
+        vkGetPhysicalDeviceFeatures(device, &deviceFeatures);
+
+        std::cout << "Considering gpu device " << deviceProperties.deviceName << '\n';
+
+        // Discrete GPUs have a significant performance advantage
+        if (deviceProperties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
+        {
+            score += 1000;
+        }
+
+        // Maximum possible size of textures affects graphics quality
+        score += deviceProperties.limits.maxImageDimension2D;
+
+        // Application can't function without geometry shaders
+        if (!deviceFeatures.geometryShader)
+        {
+            return 0;
+        }
+
+        return score;
     }
 
     void populateDebugMessengerCreateInfo(VkDebugUtilsMessengerCreateInfoEXT &createInfo)
