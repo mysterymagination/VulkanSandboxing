@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <map>
+#include <optional>
 
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;
@@ -69,6 +70,17 @@ private:
     VkInstance instance;
     VkDebugUtilsMessengerEXT debugMessenger;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
+    VkDevice logicalDevice;
+    VkQueue graphicsQueue;
+
+    struct QueueFamilyIndices
+    {
+        std::optional<uint32_t> graphicsFamily;
+        bool isComplete()
+        {
+            return graphicsFamily.has_value();
+        }
+    };
 
 private:
     void initWindow()
@@ -134,6 +146,32 @@ private:
         {
             throw std::runtime_error("failed to create triangly vkinstance");
         }
+    }
+
+    QueueFamilyIndices findQueueFamilies(VkPhysicalDevice device)
+    {
+        QueueFamilyIndices indices;
+        // Assign index to queue families that could be found
+        // This business of double calls to every query API endpoint because we need to get the result count and perform population separately is an extremely acceptable API design. Good one, Khronos smdh.
+        uint32_t queueFamilyCount = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+        vkGetPhysicalDeviceQueueFamilyProperties(device, &queueFamilyCount, queueFamilies.data());
+
+        // todo: the index we actually get outta this seems arbitrary, unless the queuefamilies we get above are ordered for some reason, and even if they are why not get the index from the actual populated struct data rather than counting manually ourselves? I don't like the smell.
+        int i = 0;
+        for (const auto &queueFamily : queueFamilies)
+        {
+            if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            {
+                indices.graphicsFamily = i;
+                break;
+            }
+
+            i++;
+        }
+
+        return indices;
     }
 
     /**
@@ -236,7 +274,46 @@ private:
     {
         createInstance();
         setupDebugMessenger();
+        // Physical device represents the actual hardware capabilities available for Vulkan
         pickPhysicalDevice();
+        // Logical device is how we interace with the physical device; there can be many logical devices interfacing with one physical device and they maintain independent states
+        createLogicalDevice();
+    }
+
+    void createLogicalDevice()
+    {
+        QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
+        VkDeviceQueueCreateInfo queueCreateInfo{};
+        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
+        queueCreateInfo.queueCount = 1;
+        float queuePriority = 1.0f;
+        queueCreateInfo.pQueuePriorities = &queuePriority;
+
+        VkPhysicalDeviceFeatures deviceFeatures{}; // todo: revisit when we finally start doing anything
+
+        VkDeviceCreateInfo createInfo{};
+        createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+        createInfo.pQueueCreateInfos = &queueCreateInfo;
+        createInfo.queueCreateInfoCount = 1;
+        createInfo.pEnabledFeatures = &deviceFeatures;
+        createInfo.enabledExtensionCount = 0;
+
+        if (enableValidationLayers)
+        {
+            createInfo.enabledLayerCount = static_cast<uint32_t>(validationLayers.size());
+            createInfo.ppEnabledLayerNames = validationLayers.data();
+        }
+        else
+        {
+            createInfo.enabledLayerCount = 0;
+        }
+
+        if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &logicalDevice) != VK_SUCCESS)
+        {
+            throw std::runtime_error("failed to create logical device!");
+        }
+        vkGetDeviceQueue(logicalDevice, indices.graphicsFamily.value(), 0, &graphicsQueue);
     }
 
     void pickPhysicalDevice()
@@ -319,8 +396,9 @@ private:
         // Maximum possible size of textures affects graphics quality
         score += deviceProperties.limits.maxImageDimension2D;
 
-        // Application can't function without geometry shaders
-        if (!deviceFeatures.geometryShader)
+        // Application can't function without geometry shaders or required Q family(ies)
+        QueueFamilyIndices indices = findQueueFamilies(device);
+        if (!deviceFeatures.geometryShader || !indices.isComplete())
         {
             return 0;
         }
@@ -361,6 +439,7 @@ private:
 
     void cleanup()
     {
+        vkDestroyDevice(logicalDevice, nullptr);
         if (enableValidationLayers)
         {
             destroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
