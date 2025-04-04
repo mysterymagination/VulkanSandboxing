@@ -71,7 +71,11 @@ private:
     VkDebugUtilsMessengerEXT debugMessenger;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     VkDevice logicalDevice;
+    /**
+     * A queue in Vulkan is a literal queue of commands; we send command buffers to them, and each queue in each queue family is ordered. The queue family we're interested in is just graphics, so the idea is to have command queues per GPU hardware capability e.g. graphics, compute, codec ops etc. See https://registry.khronos.org/vulkan/specs/latest/man/html/VkQueueFlagBits.html for the full list of queue family cap bits.
+     */
     VkQueue graphicsQueue;
+    VkSurfaceKHR surface;
 
     struct QueueFamilyIndices
     {
@@ -274,10 +278,18 @@ private:
     {
         createInstance();
         setupDebugMessenger();
+        createSurface();
         // Physical device represents the actual hardware capabilities available for Vulkan
         pickPhysicalDevice();
         // Logical device is how we interace with the physical device; there can be many logical devices interfacing with one physical device and they maintain independent states
         createLogicalDevice();
+    }
+
+    void createSurface() 
+    {
+        if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {
+            throw std::runtime_error("failed to create window surface!");
+        }
     }
 
     void createLogicalDevice()
@@ -444,6 +456,7 @@ private:
         {
             destroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
         }
+        vkDestroySurfaceKHR(instance, surface, nullptr);
         vkDestroyInstance(instance, nullptr);
         glfwDestroyWindow(window);
         glfwTerminate();
