@@ -8,11 +8,14 @@
 #include <algorithm>
 #include <map>
 #include <optional>
+#include <set>
 
 const uint32_t WINDOW_WIDTH = 800;
 const uint32_t WINDOW_HEIGHT = 600;
 const std::vector<const char *> validationLayers = {
     "VK_LAYER_KHRONOS_validation"};
+const std::vector<const char *> deviceExtensions = {
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
 #ifdef NDEBUG
 const bool enableValidationLayers = false;
@@ -75,15 +78,27 @@ private:
      * A queue in Vulkan is a literal queue of commands; we send command buffers to them, and each queue in each queue family is ordered. The queue family we're interested in is just graphics, so the idea is to have command queues per GPU hardware capability e.g. graphics, compute, codec ops etc. See https://registry.khronos.org/vulkan/specs/latest/man/html/VkQueueFlagBits.html for the full list of queue family cap bits.
      */
     VkQueue graphicsQueue;
+    /**
+     * The present Q accepts surface presentation commands. For some reason it must be searched for with a dedicated function vkGetPhysicalDeviceSurfaceSupportKHR() instead of just looking for a Q id bit like we did above. Something something abstracting the Vulkan graphics api so it can serve any purpose for some reason, the api to end all apis, even for non-graphics utility? smdh, Khronos.
+     */
+    VkQueue presentQueue;
     VkSurfaceKHR surface;
 
     struct QueueFamilyIndices
     {
         std::optional<uint32_t> graphicsFamily;
+        std::optional<uint32_t> presentFamily;
         bool isComplete()
         {
-            return graphicsFamily.has_value();
+            return graphicsFamily.has_value() && presentFamily.has_value();
         }
+    };
+
+    struct SwapChainSupportDetails
+    {
+        VkSurfaceCapabilitiesKHR capabilities;
+        std::vector<VkSurfaceFormatKHR> formats;
+        std::vector<VkPresentModeKHR> presentModes;
     };
 
 private:
@@ -141,7 +156,7 @@ private:
             createInfo.pNext = nullptr;
         }
 
-        if (!checkExtensions(std::vector<std::string>(extensions.data(), extensions.data() + extensions.size())))
+        if (!checkInstanceExtensions(std::vector<std::string>(extensions.data(), extensions.data() + extensions.size())))
         {
             throw std::runtime_error("failed to create triangly vkinstance due to unsupported extensions");
         }
@@ -169,8 +184,18 @@ private:
             if (queueFamily.queueFlags & VK_QUEUE_GRAPHICS_BIT)
             {
                 indices.graphicsFamily = i;
-                break;
             }
+
+            VkBool32 presentSupport = false;
+            vkGetPhysicalDeviceSurfaceSupportKHR(device, i, surface, &presentSupport);
+            if (presentSupport)
+            {
+                indices.presentFamily = i;
+            }
+
+            // exit early once we've found all the Q support we need.
+            if indices
+                .isComplete() break;
 
             i++;
         }
@@ -235,11 +260,11 @@ private:
     }
 
     /**
-     * @brief Enumerates the supported vk extensions on stdout and checks them against the input required extension set.
+     * @brief Enumerates the supported vkinstance extensions on stdout and checks them against the input required extension set for the top level driver/vulkan implementation interface; we'll have to check for device specific extensions separately in checkDeviceExtensions().
      * @param reference to a vector of strings identifying the required extension names.
      * @return true if all the required extensions are also found in the supported extensions set; false otherwise.
      */
-    bool checkExtensions(const std::vector<std::string> &requiredExtensions)
+    bool checkInstanceExtensions(const std::vector<std::string> &requiredExtensions)
     {
         // check which vk extensions the driver supports against our requirements.
         uint32_t supportedExtensionCount = 0;
@@ -274,6 +299,56 @@ private:
         return allRequiredExtensionsAreSupported;
     }
 
+    bool checkDeviceExtensionSupport(VkPhysicalDevice device)
+    {
+        uint32_t extensionCount;
+        vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, nullptr);
+
+        std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+        vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount, availableExtensions.data());
+
+        std::set<std::string> requiredExtensions(deviceExtensions.begin(), deviceExtensions.end());
+        for (const auto &extension : availableExtensions)
+        {
+            requiredExtensions.erase(extension.extensionName);
+        }
+
+        return requiredExtensions.empty();
+    }
+
+    /**
+     * Checks the swapchain properties supported by the input device, e.g. surface capabilities such as min/max number of images, surface formats such as color space, and available presentation modes.
+     * @return a SwapChainSupportDetails struct populated for the given device.
+     */
+    SwapChainSupportDetails querySwapChainSupport(VkPhysicalDevice device)
+    {
+        SwapChainSupportDetails details;
+
+        // query surface cap
+        vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, surface, &details.capabilities);
+
+        // query surface formats
+        uint32_t formatCount;
+        vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, nullptr);
+        if (formatCount != 0)
+        {
+            details.formats.resize(formatCount);
+            vkGetPhysicalDeviceSurfaceFormatsKHR(device, surface, &formatCount, details.formats.data());
+        }
+
+        // query present modes
+        uint32_t presentModeCount;
+        vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, nullptr);
+
+        if (presentModeCount != 0)
+        {
+            details.presentModes.resize(presentModeCount);
+            vkGetPhysicalDeviceSurfacePresentModesKHR(device, surface, &presentModeCount, details.presentModes.data());
+        }
+
+        return details;
+    }
+
     void initVulkan()
     {
         createInstance();
@@ -285,9 +360,10 @@ private:
         createLogicalDevice();
     }
 
-    void createSurface() 
+    void createSurface()
     {
-        if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS) {
+        if (glfwCreateWindowSurface(instance, window, nullptr, &surface) != VK_SUCCESS)
+        {
             throw std::runtime_error("failed to create window surface!");
         }
     }
@@ -295,21 +371,29 @@ private:
     void createLogicalDevice()
     {
         QueueFamilyIndices indices = findQueueFamilies(physicalDevice);
-        VkDeviceQueueCreateInfo queueCreateInfo{};
-        queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queueCreateInfo.queueFamilyIndex = indices.graphicsFamily.value();
-        queueCreateInfo.queueCount = 1;
+        std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+        std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(), indices.presentFamily.value()};
+
         float queuePriority = 1.0f;
-        queueCreateInfo.pQueuePriorities = &queuePriority;
+        for (uint32_t queueFamily : uniqueQueueFamilies)
+        {
+            VkDeviceQueueCreateInfo queueCreateInfo{};
+            queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueCreateInfo.queueFamilyIndex = queueFamily;
+            queueCreateInfo.queueCount = 1;
+            queueCreateInfo.pQueuePriorities = &queuePriority;
+            queueCreateInfos.push_back(queueCreateInfo);
+        }
 
         VkPhysicalDeviceFeatures deviceFeatures{}; // todo: revisit when we finally start doing anything
 
         VkDeviceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-        createInfo.pQueueCreateInfos = &queueCreateInfo;
-        createInfo.queueCreateInfoCount = 1;
+        createInfo.pQueueCreateInfos = queueCreateInfos.data();
+        createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueCreateInfos.size());
         createInfo.pEnabledFeatures = &deviceFeatures;
-        createInfo.enabledExtensionCount = 0;
+        createInfo.enabledExtensionCount = static_cast<uint32_t>(deviceExtensions.size());
+        createInfo.ppEnabledExtensionNames = deviceExtensions.data();
 
         if (enableValidationLayers)
         {
@@ -326,6 +410,7 @@ private:
             throw std::runtime_error("failed to create logical device!");
         }
         vkGetDeviceQueue(logicalDevice, indices.graphicsFamily.value(), 0, &graphicsQueue);
+        vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
     }
 
     void pickPhysicalDevice()
@@ -410,9 +495,27 @@ private:
 
         // Application can't function without geometry shaders or required Q family(ies)
         QueueFamilyIndices indices = findQueueFamilies(device);
-        if (!deviceFeatures.geometryShader || !indices.isComplete())
+        if (!deviceFeatures.geometryShader || !indices.isComplete() || !checkDeviceExtensionSupport(device))
         {
             return 0;
+        }
+        else
+        {
+            // now that we know we support the required extensions, including swapchain, we can query the swapchain capabilities to see if those meet our minimum requirements.
+            bool swapChainAdequate = false;
+            SwapChainSupportDetails swapChainSupport = querySwapChainSupport(device);
+            swapChainAdequate = !swapChainSupport.formats.empty() && !swapChainSupport.presentModes.empty();
+            if (!swapCainAdequate)
+            {
+                return 0;
+            }
+
+            // finally, last minute adjustments for optimal nice-to-haves now that we've passed our minimum viability checks and gathered all the details.
+            if (indices.graphicsFamily == indices.presentFamily)
+            {
+                // slight bump for a device whose gfx and present Q are the same guy, for efficiency.
+                score += 100;
+            }
         }
 
         return score;
